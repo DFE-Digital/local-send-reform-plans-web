@@ -1,0 +1,28 @@
+@using Microsoft.AspNetCore.Html;
+@using GovUK.Dfe.LocalSendReformPlans.Web.Utilities;
+@model GovUK.Dfe.LocalSendReformPlans.Web.Services.FieldViewModel
+@{
+    var maxLengthRule = Model.Field.Validations?.Where(v => v.Type == "maxLength").FirstOrDefault()?.Rule.ToString();
+    int.TryParse(maxLengthRule, out var maxLengthValue);
+    var labelClasses = Model.Field.Label.IsVisible ? "" : "govuk-visually-hidden";
+    var maxLengthMessage = Model.Field.Validations?.Where(v => v.Type == "maxLength").FirstOrDefault()?.Message
+        ?? "You have entered too many characters";
+}
+<govuk-character-count id="@Model.Id" name="Data[@Model.Field.FieldId]" max-length="@maxLengthValue">
+    <govuk-character-count-label class="@labelClasses" asp-for="@Model.Field.FieldId">@Model.Field.Label</govuk-character-count-label>
+    @{
+        var (hintHtml, hintClass) = MarkdownSafe.RenderHintWithClass(Model.Field.Tooltip);
+    }
+    <govuk-character-count-hint class="@hintClass">
+        @Html.Raw(hintHtml)
+    </govuk-character-count-hint>
+
+    @if (Model.ErrorMessage != String.Empty)
+    {
+        <govuk-character-count-error-message>
+            <span class="govuk-visually-hidden">Error: </span>
+            @Model.ErrorMessage
+        </govuk-character-count-error-message>
+    }
+    <govuk-character-count-value>@Model.CurrentValue</govuk-character-count-value>
+</govuk-character-count>
