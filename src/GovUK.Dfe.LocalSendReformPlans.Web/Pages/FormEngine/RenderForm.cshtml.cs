@@ -2803,7 +2803,7 @@ namespace GovUK.Dfe.LocalSendReformPlans.Web.Pages.FormEngine
                 {
                     Message = SuccessMessage,
                     Category = "file-upload",
-                    Context = fieldId + "FileUpload",
+                    Context = "Lsrp",
                     Type = NotificationType.Success,
                     AutoDismiss = false,
                     AutoDismissSeconds = 5
@@ -2936,7 +2936,7 @@ namespace GovUK.Dfe.LocalSendReformPlans.Web.Pages.FormEngine
             {
                 Message = string.Empty, // set later when known
                 Category = "file-upload",
-                Context = fieldId + "FileDeletion",
+                Context = "Lsrp",
                 Type = NotificationType.Success,
                 AutoDismiss = false,
             };
