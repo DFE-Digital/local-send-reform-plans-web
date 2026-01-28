@@ -19,7 +19,7 @@ RUN --mount=type=secret,id=github_token \
 # Stage 2 - Build a runtime environment
 FROM mcr.microsoft.com/dotnet/aspnet:${DOTNET_VERSION}-azurelinux3.0 AS final
 WORKDIR /app
-LABEL org.opencontainers.image.source="https://github.com/DFE-Digital/external-applications-web"
+LABEL org.opencontainers.image.source="https://github.com/DFE-Digital/local-send-reform-plans-web"
 LABEL org.opencontainers.image.description="LSRP - App"
 
 
