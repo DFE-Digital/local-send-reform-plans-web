@@ -3559,50 +3559,50 @@ namespace GovUK.Dfe.LocalSendReformPlans.Web.Pages.FormEngine
         /// <param name="application">The submitted application</param>
         private async Task PublishApplicationSubmittedEventAsync(ApplicationDto application)
         {
-            try
-            {
-                _logger.LogInformation(
-                    "Starting event publishing for application {ApplicationId}",
-                    application.ApplicationId);
+            //try
+            //{
+            //    //_logger.LogInformation(
+            //    //    "Starting event publishing for application {ApplicationId}",
+            //    //    application.ApplicationId);
 
-                // Map form data to event using the configured mapping
-                var eventData = await _eventDataMapper.MapToEventAsync<TransferApplicationSubmittedEvent>(
-                    FormData,
-                    Template,
-                    "transfer-application-submitted-v1",
-                    application.ApplicationId,
-                    application.ApplicationReference);
+            //    //// Map form data to event using the configured mapping
+            //    //var eventData = await _eventDataMapper.MapToEventAsync<TransferApplicationSubmittedEvent>(
+            //    //    FormData,
+            //    //    Template,
+            //    //    "transfer-application-submitted-v1",
+            //    //    application.ApplicationId,
+            //    //    application.ApplicationReference);
 
 
-                // Build Azure Service Bus message properties
-                var messageProperties = AzureServiceBusMessagePropertiesBuilder
-                    .Create()
-                    .AddCustomProperty("serviceName", "extweb")
-                    .Build();
+            //    //// Build Azure Service Bus message properties
+            //    //var messageProperties = AzureServiceBusMessagePropertiesBuilder
+            //    //    .Create()
+            //    //    .AddCustomProperty("serviceName", "extweb-Lsrp")
+            //    //    .Build();
 
-                // Publish to Azure Service Bus via MassTransit
-                await publishEndpoint.PublishAsync(
-                    eventData,
-                    messageProperties,
-                    CancellationToken.None);
+            //    //// Publish to Azure Service Bus via MassTransit
+            //    //await publishEndpoint.PublishAsync(
+            //    //    eventData,
+            //    //    messageProperties,
+            //    //    CancellationToken.None);
 
-                _logger.LogInformation(
-                    "Successfully published TransferApplicationSubmittedEvent for application {ApplicationId} with reference {ApplicationReference}",
-                    application.ApplicationId,
-                    application.ApplicationReference);
-            }
-            catch (Exception ex)
-            {
-                // Log the error but don't fail the submission
-                // The application has already been successfully submitted to the database
-                _logger.LogError(
-                    ex,
-                    "Failed to publish TransferApplicationSubmittedEvent for application {ApplicationId}. " +
-                    "Application was successfully submitted, but event publishing failed.",
-                    application.ApplicationId);
+            //    //_logger.LogInformation(
+            //    //    "Successfully published TransferApplicationSubmittedEvent for application {ApplicationId} with reference {ApplicationReference}",
+            //    //    application.ApplicationId,
+            //    //    application.ApplicationReference);
+            //}
+            //catch (Exception ex)
+            //{
+            //    // Log the error but don't fail the submission
+            //    // The application has already been successfully submitted to the database
+            //    _logger.LogError(
+            //        ex,
+            //        "Failed to publish TransferApplicationSubmittedEvent for application {ApplicationId}. " +
+            //        "Application was successfully submitted, but event publishing failed.",
+            //        application.ApplicationId);
                 
-                // Don't throw - we don't want to fail the user's submission because event publishing failed
-            }
+            //    // Don't throw - we don't want to fail the user's submission because event publishing failed
+            //}
         }
 
         #endregion
