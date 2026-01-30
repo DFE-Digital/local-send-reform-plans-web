@@ -2974,60 +2974,56 @@ namespace GovUK.Dfe.LocalSendReformPlans.Web.Pages.FormEngine
 
         /// <summary>
         /// Filters out any infected files from the given list using the Redis blacklist.
-        ///  This ensures infected files are never shown or re-saved, regardless of where they come from.
+        /// This ensures infected files are never shown or re-saved, regardless of where they come from.
+        /// Uses direct key lookup instead of KEYS command for better reliability and performance.
+        /// Checks both file ID-based and filename-based blacklists.
         /// </summary>
         public List<UploadDto> FilterInfectedFilesFromList(List<UploadDto> files)
         {
             if (files == null || files.Count == 0)
                 return files ?? new List<UploadDto>();
-            
+
             try
             {
                 var db = _redis.GetDatabase();
-                var server = _redis.GetServer(_redis.GetEndPoints().First());
-                
-                // Get all infected file keys from Redis blacklist
-                var infectedFileKeys = server.Keys(pattern: "DfE:InfectedFile:*").ToList();
-                
-                if (!infectedFileKeys.Any())
-                    return files; // No infected files to filter
-                
-                // Get all infected file IDs from blacklist
                 var infectedFileIds = new HashSet<Guid>();
-                foreach (var key in infectedFileKeys)
+                var appId = ApplicationId?.ToString() ?? HttpContext.Session.GetString("ApplicationId");
+
+                // Check each file against BOTH blacklist types:
+                // 1. By file ID (DfE:InfectedFile:{fileId})
+                // 2. By filename (DfE:InfectedFileName:{applicationId}:{originalFileName})
+                foreach (var file in files)
                 {
-                    var fileDataJson = db.StringGet(key);
-                    if (!fileDataJson.IsNullOrEmpty)
+                    // Check by file ID
+                    var fileIdBlacklistKey = $"DfE:InfectedFile:{file.Id}";
+                    var fileIdExists = db.KeyExists(fileIdBlacklistKey);
+
+                    // Check by filename (fallback when file ID doesn't match)
+                    var filenameBlacklistKey = $"DfE:InfectedFileName:{appId}:{file.OriginalFileName}";
+                    var filenameExists = db.KeyExists(filenameBlacklistKey);
+
+                    if (fileIdExists || filenameExists)
                     {
-                        try
-                        {
-                            var fileData = JsonSerializer.Deserialize<JsonElement>(fileDataJson!);
-                            if (fileData.TryGetProperty("FileId", out var fileIdProp) && 
-                                Guid.TryParse(fileIdProp.GetString(), out var fileId))
-                            {
-                                infectedFileIds.Add(fileId);
-                            }
-                        }
-                        catch
-                        {
-                            // Skip invalid entries
-                        }
+                        infectedFileIds.Add(file.Id);
+                        _logger.LogInformation(
+                            "File {FileId} ({FileName}) found in infected blacklist (fileId={FileIdExists}, filename={FilenameExists})",
+                            file.Id,
+                            file.OriginalFileName,
+                            fileIdExists,
+                            filenameExists);
                     }
                 }
-                
+
                 if (!infectedFileIds.Any())
                     return files;
-                
+
                 // Filter out infected files
                 var cleanFiles = files.Where(f => !infectedFileIds.Contains(f.Id)).ToList();
-                
-                if (cleanFiles.Count < files.Count)
-                {
-                    _logger.LogInformation(
-                        "Filtered out {RemovedCount} infected file(s) from list",
-                        files.Count - cleanFiles.Count);
-                }
-                
+
+                _logger.LogInformation(
+                    "Filtered out {RemovedCount} infected file(s) from list",
+                    files.Count - cleanFiles.Count);
+
                 return cleanFiles;
             }
             catch (Exception ex)
@@ -3036,6 +3032,7 @@ namespace GovUK.Dfe.LocalSendReformPlans.Web.Pages.FormEngine
                 return files; // Return original list if filtering fails
             }
         }
+
 
         /// <summary>
         /// Filters infected files from JSON-encoded upload data (used when saving form data)

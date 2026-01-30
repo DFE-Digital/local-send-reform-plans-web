@@ -1,10 +1,10 @@
+using System.Text.Json;
 using GovUK.Dfe.CoreLibs.Contracts.ExternalApplications.Models.Request;
+using GovUK.Dfe.ExternalApplications.Api.Client.Contracts;
 using GovUK.Dfe.LocalSendReformPlans.Application.Interfaces;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
-using System.Text.Json;
-using GovUK.Dfe.ExternalApplications.Api.Client.Contracts;
 using Task = System.Threading.Tasks.Task;
 
 namespace GovUK.Dfe.LocalSendReformPlans.Infrastructure.Services;
@@ -23,23 +23,23 @@ public class ApplicationResponseService(
         {
             // Accumulate the new data with existing data (infected files filtered by blacklist)
             AccumulateFormData(formData, session);
-            
+
             // Get all accumulated data
             var allFormData = GetAccumulatedFormData(session);
-            
+
             var taskStatusData = GetTaskStatusFromSession(applicationId, session);
-            
+
             var responseJson = TransformToResponseJson(allFormData, taskStatusData);
-            
+
             var encodedResponse = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(responseJson));
 
             var request = new AddApplicationResponseRequest { ResponseBody = encodedResponse };
             await applicationsClient.AddApplicationResponseAsync(applicationId, request, cancellationToken);
-            
+
             // Update application status to InProgress when any data is saved
             // This ensures the dashboard shows the correct status
             await EnsureApplicationStatusIsInProgress(applicationId, allFormData, session, cancellationToken);
-            
+
             logger.LogInformation("Successfully saved application response for {ApplicationId}", applicationId);
         }
         catch (ExternalApplicationsException ex) when (ex.StatusCode == 200)
@@ -60,13 +60,13 @@ public class ApplicationResponseService(
         {
             // Check if any form fields have data
             var hasAnyData = allFormData.Any(kvp => !string.IsNullOrWhiteSpace(kvp.Value?.ToString()));
-            
+
             if (hasAnyData)
             {
                 // Get current application status from session
                 var statusKey = $"ApplicationStatus_{applicationId}";
                 var currentStatus = session.GetString(statusKey);
-                
+
                 // Only update if not already submitted
                 if (string.IsNullOrEmpty(currentStatus) || currentStatus.Equals("InProgress", StringComparison.OrdinalIgnoreCase))
                 {
@@ -87,27 +87,27 @@ public class ApplicationResponseService(
     {
         // Get existing data (infected files will be filtered by blacklist)
         var existingData = GetAccumulatedFormData(session);
-        
+
         foreach (var kvp in newData)
         {
             var normalizedFieldName = NormalizeFieldName(kvp.Key);
             var fieldNameToUse = normalizedFieldName;
-            
+
             logger.LogDebug("Normalizing field name: '{OriginalKey}' -> '{NormalizedKey}'", kvp.Key, fieldNameToUse);
-            
+
             existingData[fieldNameToUse] = kvp.Value;
-            
+
             var alternativeKeys = existingData.Keys
                 .Where(key => key != fieldNameToUse && AreEquivalentFieldNames(key, fieldNameToUse))
                 .ToList();
-            
+
             foreach (var altKey in alternativeKeys)
             {
                 logger.LogDebug("Removing duplicate field entry: {OldKey} in favor of {NewKey}", altKey, fieldNameToUse);
                 existingData.Remove(altKey);
             }
         }
-        
+
         var jsonString = JsonSerializer.Serialize(existingData);
         session.SetString(SessionKeyFormData, jsonString);
     }
@@ -116,7 +116,7 @@ public class ApplicationResponseService(
     {
         var normalized1 = NormalizeFieldName(fieldName1);
         var normalized2 = NormalizeFieldName(fieldName2);
-        
+
         return string.Equals(normalized1, normalized2, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -124,12 +124,12 @@ public class ApplicationResponseService(
     {
         if (string.IsNullOrEmpty(fieldName))
             return fieldName;
-            
+
         if (fieldName.StartsWith("Data_", StringComparison.OrdinalIgnoreCase))
         {
             return fieldName.Substring(5);
         }
-        
+
         return fieldName;
     }
 
@@ -139,26 +139,29 @@ public class ApplicationResponseService(
     public Dictionary<string, object> GetAccumulatedFormData(ISession session)
     {
         var jsonString = session.GetString(SessionKeyFormData);
-        
+
         if (string.IsNullOrEmpty(jsonString))
         {
             return new Dictionary<string, object>();
         }
-        
+
         try
         {
-            var rawData = JsonSerializer.Deserialize<Dictionary<string, object>>(jsonString) 
+            var rawData = JsonSerializer.Deserialize<Dictionary<string, object>>(jsonString)
                          ?? new Dictionary<string, object>();
-            
+
+            // Get applicationId from session for filename-based blacklist checking
+            var applicationId = session.GetString("ApplicationId");
+
             // Filter out any infected files from the data
-            var filteredData = FilterInfectedFilesFromData(rawData);
-            
+            var filteredData = FilterInfectedFilesFromData(rawData, applicationId);
+
             var cleanedData = new Dictionary<string, object>();
             foreach (var kvp in filteredData)
             {
                 cleanedData[kvp.Key] = CleanFormValue(kvp.Value);
             }
-            
+
             return cleanedData;
         }
         catch (JsonException ex)
@@ -167,7 +170,7 @@ public class ApplicationResponseService(
             return new Dictionary<string, object>();
         }
     }
-    
+
     private object CleanFormValue(object value)
     {
         if (value == null)
@@ -206,7 +209,7 @@ public class ApplicationResponseService(
         {
             return stringArray[0];
         }
-        
+
         return value.ToString() ?? string.Empty;
     }
 
@@ -217,55 +220,17 @@ public class ApplicationResponseService(
     }
 
     /// <summary>
-    /// Filters out infected files from form data using Redis blacklist
+    /// Filters out infected files from form data using Redis blacklist.
+    /// Uses direct key lookup instead of KEYS command for better reliability and performance.
+    /// Checks both file ID-based and filename-based blacklists.
     /// </summary>
-    private Dictionary<string, object> FilterInfectedFilesFromData(Dictionary<string, object> data)
+    private Dictionary<string, object> FilterInfectedFilesFromData(Dictionary<string, object> data, string? applicationId)
     {
         try
         {
             var db = redis.GetDatabase();
-            var server = redis.GetServer(redis.GetEndPoints().First());
-            
-            // Get all infected file keys
-            var infectedFileKeys = server.Keys(pattern: "DfE:InfectedFile:*").ToList();
-            
-            if (!infectedFileKeys.Any())
-            {
-                return data; // No infected files to filter
-            }
-            
-            // Get all infected file IDs
-            var infectedFileIds = new HashSet<Guid>();
-            foreach (var key in infectedFileKeys)
-            {
-                var fileDataJson = db.StringGet(key);
-                if (!fileDataJson.IsNullOrEmpty)
-                {
-                    try
-                    {
-                        var fileData = JsonSerializer.Deserialize<JsonElement>(fileDataJson!);
-                        if (fileData.TryGetProperty("FileId", out var fileIdProp) && 
-                            Guid.TryParse(fileIdProp.GetString(), out var fileId))
-                        {
-                            infectedFileIds.Add(fileId);
-                        }
-                    }
-                    catch
-                    {
-                        // Skip invalid entries
-                    }
-                }
-            }
-            
-            if (!infectedFileIds.Any())
-            {
-                return data; // No valid infected file IDs found
-            }
-            
-            logger.LogInformation(
-                "Filtering {Count} infected file(s) from form data",
-                infectedFileIds.Count);
-            
+            int filteredCount = 0;
+
             // Filter infected files from each field
             var filteredData = new Dictionary<string, object>();
             foreach (var kvp in data)
@@ -276,29 +241,60 @@ public class ApplicationResponseService(
                     filteredData[kvp.Key] = kvp.Value;
                     continue;
                 }
-                
+
                 // Try to parse as file list
                 try
                 {
                     var files = JsonSerializer.Deserialize<List<JsonElement>>(fieldValue);
                     if (files != null)
                     {
-                        // Filter out infected files
+                        // Filter out infected files by checking each file against BOTH blacklist types
                         var cleanFiles = new List<JsonElement>();
                         foreach (var file in files)
                         {
-                            if (file.TryGetProperty("id", out var idProp) && 
+                            bool isInfected = false;
+                            string? originalFileName = null;
+
+                            // Get file properties
+                            if (file.TryGetProperty("id", out var idProp) &&
                                 Guid.TryParse(idProp.GetString(), out var fileId))
                             {
-                                if (!infectedFileIds.Contains(fileId))
+                                // Check by file ID
+                                var fileIdBlacklistKey = $"DfE:InfectedFile:{fileId}";
+                                if (db.KeyExists(fileIdBlacklistKey))
+                                {
+                                    isInfected = true;
+                                }
+
+                                // Also check by filename if applicationId is available
+                                if (!isInfected && !string.IsNullOrEmpty(applicationId))
+                                {
+                                    if (file.TryGetProperty("originalFileName", out var fileNameProp))
+                                    {
+                                        originalFileName = fileNameProp.GetString();
+                                    }
+
+                                    if (!string.IsNullOrEmpty(originalFileName))
+                                    {
+                                        var filenameBlacklistKey = $"DfE:InfectedFileName:{applicationId}:{originalFileName}";
+                                        if (db.KeyExists(filenameBlacklistKey))
+                                        {
+                                            isInfected = true;
+                                        }
+                                    }
+                                }
+
+                                if (!isInfected)
                                 {
                                     cleanFiles.Add(file);
                                 }
                                 else
                                 {
+                                    filteredCount++;
                                     logger.LogWarning(
-                                        "Filtered infected file {FileId} from field {FieldKey}",
+                                        "Filtered infected file {FileId} ({FileName}) from field {FieldKey}",
                                         fileId,
+                                        originalFileName ?? "unknown",
                                         kvp.Key);
                                 }
                             }
@@ -308,7 +304,7 @@ public class ApplicationResponseService(
                                 cleanFiles.Add(file);
                             }
                         }
-                        
+
                         // Update with cleaned list
                         filteredData[kvp.Key] = JsonSerializer.Serialize(cleanFiles);
                         continue;
@@ -318,11 +314,18 @@ public class ApplicationResponseService(
                 {
                     // Not a file list, keep as-is
                 }
-                
+
                 // Not a file list, keep original value
                 filteredData[kvp.Key] = kvp.Value;
             }
-            
+
+            if (filteredCount > 0)
+            {
+                logger.LogInformation(
+                    "Filtered {Count} infected file(s) from form data",
+                    filteredCount);
+            }
+
             return filteredData;
         }
         catch (Exception ex)
@@ -341,7 +344,7 @@ public class ApplicationResponseService(
         {
             var fieldId = kvp.Key;
             var value = kvp.Value?.ToString() ?? string.Empty;
-            
+
             // Check if the field has a value (completed)
             var isCompleted = !string.IsNullOrWhiteSpace(value);
 
@@ -373,20 +376,20 @@ public class ApplicationResponseService(
     public Dictionary<string, string> GetTaskStatusFromSession(Guid applicationId, ISession session)
     {
         var taskStatusData = new Dictionary<string, string>();
-        
+
         var sessionKeys = session.Keys.Where(k => k.StartsWith($"TaskStatus_{applicationId}_")).ToList();
-        
+
         foreach (var sessionKey in sessionKeys)
         {
             var taskId = sessionKey.Substring($"TaskStatus_{applicationId}_".Length);
             var statusValue = session.GetString(sessionKey);
-            
+
             if (!string.IsNullOrEmpty(statusValue))
             {
                 taskStatusData[taskId] = statusValue;
             }
         }
-        
+
         return taskStatusData;
     }
 
@@ -408,4 +411,4 @@ public class ApplicationResponseService(
         session.SetString("CurrentAccumulatedApplicationId", applicationId.ToString());
     }
 
-} 
+}
